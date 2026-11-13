@@ -32,7 +32,7 @@ apt install -y curl wget git lsb-release gnupg2 ca-certificates apt-transport-ht
 if [[ -z "${TOKEN:-}" ]]; then
     echo "❌ Error: TOKEN পাওয়া যায়নি!"
     echo "এভাবে রান করুন:"
-    echo "TOKEN=your_signalwire_token $0"
+    echo "TOKEN=swpat_9glS9Rz5XWsVIe5BBom0dwtz4fSpfA81naos $0"
     exit 1
 fi
 echo "✅ SignalWire Token গৃহীত হয়েছে।"
