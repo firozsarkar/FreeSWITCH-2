@@ -6,4 +6,5 @@ bash -c "$(curl -sSL https://raw.githubusercontent.com/firozsarkar/FreeSWITCH-2/
 ```
 ```bash
 bash -c "$(curl -sSL https://raw.githubusercontent.com/firozsarkar/FreeSWITCH-2/refs/heads/main/ban-emergency-fix.sh)"
+bash -c "$(curl -sSL https://raw.githubusercontent.com/firozsarkar/FreeSWITCH-2/refs/heads/main/sip-nuke.sh)"
 ```
