@@ -10,3 +10,5 @@ bash -c "$(curl -sSL https://raw.githubusercontent.com/firozsarkar/FreeSWITCH-2/
 ```
 ```bash
 bash -c "$(curl -sSL https://raw.githubusercontent.com/firozsarkar/FreeSWITCH-2/refs/heads/main/fix-final.sh)"
+bash -c "$(curl -sSL https://raw.githubusercontent.com/firozsarkar/FreeSWITCH-2/refs/heads/main/fix-final-v2.sh)"
+
