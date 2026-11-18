@@ -1,96 +1,149 @@
 #!/bin/bash
 # ==============================================================================
-# Script Name: fix-final-v2.sh (Ultimate SIP Protection v3)
-# Description: Fail2Ban + FreeSWITCH SIP Protection & Dynamic IP Blocker
+# sip-shield.sh — FreeSWITCH SIP সুরক্ষা (সব স্ক্রিপ্টের একত্র সংস্করণ)
+#   ১) সঠিক fail2ban ফিল্টার (escaped regex)
+#   ২) ban হলে conntrack flush (পুরনো connection-ও কেটে যায়)
+#   ৩) ipset দিয়ে দ্রুত ব্যান (হাজার IP হলেও ধীর হয় না)
+#   ৪) প্রতি-IP rate limit, রিবুটের পরেও থাকে (systemd)
+#   ৫) নিজের/বিশ্বস্ত IP কখনো ব্যান হবে না
+# বারবার চালানো নিরাপদ।
 # ==============================================================================
-
 set -euo pipefail
+[[ $EUID -ne 0 ]] && { echo "❌ root দিয়ে চালান"; exit 1; }
 
-[[ $EUID -ne 0 ]] && { echo "❌ এই স্ক্রিপ্ট root/sudo দিয়ে চালাতে হবে।"; exit 1; }
+# ---- আপনার সার্ভার ও বিশ্বস্ত IP (স্পেস দিয়ে আলাদা করুন) ----
+SERVER_IP="38.60.235.146"
+TRUSTED_IPS="${TRUSTED_IPS:-}"          # যেমন: TRUSTED_IPS="1.2.3.4 5.6.7.8" ./sip-shield.sh
+SIP_PORTS="5060 5061 5080"
+FS_LOG="/var/log/freeswitch/freeswitch.log"
 
-echo "=========================================================="
-echo "🔧 FreeSWITCH আল্টিমেট ফায়ারওয়াল ও Fail2Ban প্রটেকশন শুরু হচ্ছে..."
-echo "=========================================================="
+# আপনার SSH IP স্বয়ংক্রিয়ভাবে বিশ্বস্ত (নিজেকে লক আউট থেকে বাঁচাতে)
+SSH_IP="${SSH_CLIENT%% *}"
+IGNORE="127.0.0.1/8 ::1 $SERVER_IP $TRUSTED_IPS ${SSH_IP:-}"
 
-# ১. Fail2Ban সার্ভিস সাময়িকভাবে থামানো ও সকেট পরিষ্কার করা
-echo "🧹 Fail2Ban সার্ভিস রিসেট করা হচ্ছে..."
-systemctl stop fail2ban 2>/dev/null || true
-rm -f /var/run/fail2ban/fail2ban.sock 2>/dev/null || true
+echo "📦 প্যাকেজ ইনস্টল..."
+DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban conntrack ipset iptables >/dev/null
 
-# ২. FreeSWITCH লগ ফাইলের পারমিশন ও ওনারশিপ ঠিক করা
-echo "📁 FreeSWITCH লগ পারমিশন ঠিক করা হচ্ছে..."
-if [[ -f /var/log/freeswitch/freeswitch.log ]]; then
-    chmod 644 /var/log/freeswitch/freeswitch.log
-    chown freeswitch:freeswitch /var/log/freeswitch/freeswitch.log 2>/dev/null || true
+# ---- ব্যান পদ্ধতি বাছাই ----
+BANACTION="iptables-allports"
+if modprobe ip_set 2>/dev/null && ipset list >/dev/null 2>&1; then
+    BANACTION="iptables-ipset-proto6-allports"
 fi
+echo "🔥 ban action: $BANACTION"
 
-# ৩. নিখুঁত ফিল্টার তৈরি করা (/etc/fail2ban/filter.d/freeswitch.conf)
-# এটি ইনভাইট স্ক্যান, উইং কল, ভুয়া ইউজার এবং ভুল স্টেট লগগুলো ধরবে
-echo "🛡️ Fail2Ban ফিল্টার কনফিগার করা হচ্ছে..."
+systemctl stop fail2ban 2>/dev/null || true
+rm -f /var/run/fail2ban/fail2ban.sock
+mkdir -p /var/run/fail2ban
+
+# ---- পুরনো ভুল কনফিগ পরিষ্কার ----
+rm -f /etc/fail2ban/action.d/iptables-nuke.conf /etc/fail2ban/action.d/ufw-block.conf
+
+# ---- লগ পারমিশন ----
+[[ -f $FS_LOG ]] && chmod 644 "$FS_LOG"
+
+# ---- ফিল্টার (প্রতি ব্যর্থ চেষ্টায় ঠিক ১টি ম্যাচ) ----
 cat > /etc/fail2ban/filter.d/freeswitch.conf << 'EOF'
 [Definition]
-failregex = [WARNING] sofia_reg\.c:\d+ SIP auth (failure|challenge) \((REGISTER|INVITE)\) on sofia profile '[^']+' for \[[^\]]+\] from ip <HOST>
-            [WARNING] sofia_reg\.c:\d+ Can't find user \[[^\]]+\] from <HOST>
-            [WARNING] sofia\.c:\d+ IP <HOST> Rejected by acl
-            [NOTICE] sofia\.c:\d+ Hangup sofia/internal/.* \[WRONG_CALL_STATE\] from ip <HOST>
-            [INFO] sofia\.c:\d+ sofia/internal/.* receiving invite from <HOST>:\d+
-
+failregex = \[WARNING\] sofia_reg\.c:\d+ SIP auth (failure|challenge) \((REGISTER|INVITE)\) on sofia profile '[^']+' for \[[^\]]+\] from ip <HOST>
+            \[WARNING\] sofia\.c:\d+ IP <HOST> Rejected by acl
 ignoreregex =
 EOF
 
-# ৪. jail.local কনফিগারেশন
-echo "⚙️ jail.local কনফিগার করা হচ্ছে..."
-cat > /etc/fail2ban/jail.local << 'EOF'
+# ---- conntrack flush অ্যাকশন ----
+cat > /etc/fail2ban/action.d/conntrack-flush.conf << 'EOF'
+[Definition]
+actionstart =
+actionstop =
+actioncheck =
+actionban = conntrack -D -s <ip> >/dev/null 2>&1 || true
+actionunban =
+EOF
+
+# ---- jail.local ----
+cat > /etc/fail2ban/jail.local << EOF
 [DEFAULT]
-ignoreip = 127.0.0.1/8 ::1 38.60.235.146
-banaction = iptables-allports
-banaction_allports = iptables-allports
+ignoreip = $IGNORE
+banaction = $BANACTION
+banaction_allports = $BANACTION
 backend = auto
 EOF
 
-# ৫. FreeSWITCH জেল কনফিগার করা (/etc/fail2ban/jail.d/freeswitch.local)
-echo "🔧 FreeSWITCH জেল কনফিগার করা হচ্ছে..."
-cat > /etc/fail2ban/jail.d/freeswitch.local << 'EOF'
+# ---- freeswitch jail ----
+cat > /etc/fail2ban/jail.d/freeswitch.local << EOF
 [freeswitch]
 enabled  = true
 filter   = freeswitch
-logpath  = /var/log/freeswitch/freeswitch.log
-maxretry = 2
-findtime = 600
+logpath  = $FS_LOG
+backend  = polling
+maxretry = 5
+findtime = 60
 bantime  = 86400
-backend  = auto
-action   = iptables-allports[name=freeswitch]
+action   = $BANACTION[name=freeswitch]
+           conntrack-flush
 EOF
 
-# ৬. Fail2Ban কনফিগারেশন টেস্ট ও স্টার্ট
-echo "🚀 Fail2Ban চালু করা হচ্ছে..."
+# ---- recidive (বারবার আসা আক্রমণকারী: ৩০ দিন) ----
+cat > /etc/fail2ban/jail.d/recidive.local << EOF
+[recidive]
+enabled  = true
+logpath  = /var/log/fail2ban.log
+banaction = $BANACTION
+bantime  = 2592000
+findtime = 86400
+maxretry = 3
+EOF
+
+# ---- প্রতি-IP rate limit (রিবুটের পরেও) ----
+cat > /usr/local/sbin/sip-ratelimit.sh << EOF
+#!/bin/bash
+for proto in udp tcp; do
+  for port in $SIP_PORTS; do
+    rule="-p \$proto --dport \$port -m hashlimit --hashlimit-above 30/sec --hashlimit-burst 60 --hashlimit-mode srcip --hashlimit-name sip_\${proto}_\${port} -j DROP"
+    iptables -C INPUT \$rule 2>/dev/null || iptables -I INPUT 1 \$rule
+  done
+done
+EOF
+chmod +x /usr/local/sbin/sip-ratelimit.sh
+
+cat > /etc/systemd/system/sip-ratelimit.service << 'EOF'
+[Unit]
+Description=SIP per-IP rate limit
+After=network-online.target ufw.service fail2ban.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/sip-ratelimit.sh
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now sip-ratelimit.service
+
+# ---- যাচাই ও চালু ----
+echo "🔍 ফিল্টার টেস্ট (আসল লগের বিরুদ্ধে)..."
+if [[ -f $FS_LOG ]]; then
+    fail2ban-regex "$FS_LOG" /etc/fail2ban/filter.d/freeswitch.conf 2>&1 | grep -E "Lines:|Failregex" || true
+fi
 fail2ban-client -t
 systemctl restart fail2ban
-sleep 3
+for i in {1..15}; do fail2ban-client status &>/dev/null && break; sleep 1; done
 
-# ৭. বর্তমান লগ ফাইল থেকে সব আক্রমণকারী ও স্ক্যানার আইপি বের করে তৎক্ষণাৎ ড্রপ করা
-echo "🔨 বর্তমান লগ স্ক্যান করে সব স্ক্যানার ও আক্রমণকারী আইপি ফায়ারওয়ালে ব্লক করা হচ্ছে..."
-if [[ -f /var/log/freeswitch/freeswitch.log ]]; then
-    # লগ থেকে সমস্ত আইপি (from ip X, from X, receiving invite from X) এক্সট্রাক্ট করা
-    # নিজস্ব সার্ভার আইপি (যেমন 38.60.235.146) এবং লোকালআইপি ফিল্টার আউট করা হবে
-    for ip in $(tail -n 10000 /var/log/freeswitch/freeswitch.log | grep -oP '(from ip \K[0-9.]+|from \K[0-9.]+(?=:)|IP \K[0-9.]+|receiving invite from \K[0-9.]+)' | grep -vE '^(127\.|38\.60\.235\.)' | sort -u); do
-        [[ -z "$ip" ]] && continue
-        
-        # ফায়ারওয়ালের INPUT চেইনে ড্রপ রুল ইনসার্ট করা
-        iptables -C INPUT -s "$ip" -j DROP 2>/dev/null || iptables -I INPUT 1 -s "$ip" -j DROP
-        
-        # Fail2Ban এ পার্মানেন্টলি ব্যান লিস্টে তোলা
-        fail2ban-client set freeswitch banip "$ip" &>/dev/null || true
-        echo "   🔒 ফায়ারওয়ালে ড্রপ ও ব্যান করা হলো: $ip"
+# ---- লগে থাকা বর্তমান আক্রমণকারী ব্যান (১০+ ব্যর্থ চেষ্টা) ----
+if [[ -f $FS_LOG ]]; then
+    echo "🔨 বর্তমান আক্রমণকারী ব্যান..."
+    tail -n 20000 "$FS_LOG" | grep -oP 'SIP auth failure.*from ip \K[0-9.]+' \
+      | sort | uniq -c | awk '$1>10{print $2}' | while read -r ip; do
+        [[ " $IGNORE " == *" $ip "* ]] && continue
+        fail2ban-client set freeswitch banip "$ip" &>/dev/null && echo "   🔒 $ip"
     done
-else
-    echo "   ⚠️ FreeSWITCH লগ ফাইল পাওয়া যায়নি।"
 fi
 
 echo ""
-echo "=========================================================="
-echo "✅ সফলভাবে স্ক্রিপ্ট রান সম্পন্ন হয়েছে!"
-echo "=========================================================="
-echo "📊 वर्तमान Fail2Ban স্ট্যাটাস দেখতে নিচের কমান্ড দিন:"
-echo "   fail2ban-client status freeswitch"
-echo "=========================================================="
+fail2ban-client status freeswitch || true
+echo ""
+echo "✅ সম্পূর্ণ। ৩০ সেকেন্ড পর চালান: fail2ban-client status freeswitch"
+echo "   'Total failed' এখন বাড়তে থাকা উচিত।"
+echo "   লগ কমাতে fs_cli তে চালান:  /log 6"
