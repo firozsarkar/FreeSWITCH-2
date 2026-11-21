@@ -77,7 +77,7 @@ logpath  = $FS_LOG
 backend  = polling
 maxretry = 5
 findtime = 60
-bantime  = 86400
+bantime  = -1
 action   = $BANACTION[name=freeswitch]
            conntrack-flush
 EOF
@@ -88,7 +88,7 @@ cat > /etc/fail2ban/jail.d/recidive.local << EOF
 enabled  = true
 logpath  = /var/log/fail2ban.log
 banaction = $BANACTION
-bantime  = 2592000
+bantime  = -1
 findtime = 86400
 maxretry = 3
 EOF
