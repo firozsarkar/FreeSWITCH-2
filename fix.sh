@@ -201,7 +201,7 @@ logpath   = $FS_LOG
 backend   = auto
 maxretry  = 8
 findtime  = 600
-bantime   = 21600
+bantime   = -1
 banaction = iptables-allports
 protocol  = all
 
@@ -212,7 +212,7 @@ logpath   = $FS_LOG
 backend   = auto
 maxretry  = 10
 findtime  = 600
-bantime   = 21600
+bantime   = -1
 banaction = iptables-allports
 protocol  = all
 
@@ -223,7 +223,7 @@ logpath   = $FS_LOG
 backend   = auto
 maxretry  = 5
 findtime  = 600
-bantime   = 21600
+bantime   = -1
 banaction = iptables-allports
 protocol  = all
 JAIL_EOF
