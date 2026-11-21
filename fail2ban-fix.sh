@@ -124,7 +124,7 @@ enabled  = true
 backend  = systemd
 maxretry = 5
 findtime = 600
-bantime  = 3600
+bantime  = -1
 EOF
 echo "   ✅ /etc/fail2ban/jail.d/sshd.local"
 echo ""
@@ -187,7 +187,7 @@ filter   = freeswitch
 logpath  = /var/log/freeswitch/freeswitch.log
 maxretry = 20
 findtime = 300
-bantime  = 86400
+bantime  = -1
 backend  = polling
 action   = %(banaction_allports)s[name=freeswitch]
 EOF
@@ -204,7 +204,7 @@ cat > /etc/fail2ban/jail.d/recidive.local << 'EOF'
 enabled   = true
 logpath   = /var/log/fail2ban.log
 banaction = %(banaction_allports)s
-bantime   = 2592000
+bantime   = -1
 findtime  = 86400
 maxretry  = 5
 EOF
